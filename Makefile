@@ -2,6 +2,13 @@
 
 include config.mk
 
+ifdef DEBUG
+	CPPFLAGS += -ggdb -DDEBUG -Og
+else
+	CPPFLAGS += -DNDEBUG -O2
+endif
+
+
 inc_fonts_0 =
 inc_fonts_1 = -I/usr/include/freetype2 -I$(PREFIX)/include/freetype2
 lib_fonts_0 =
