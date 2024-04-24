@@ -350,7 +350,8 @@ void* emalloc(size_t);
 void* ecalloc(size_t, size_t);
 void* erealloc(void*, size_t);
 char* estrdup(const char*);
-void error(int, int, const char*, ...);
+void errorCall(char const* filePath, int lineNo, int, int, const char*, ...);
+#define error(...) errorCall(__FILE__, __LINE__, __VA_ARGS__)
 int r_opendir(r_dir_t*, const char*, bool);
 int r_closedir(r_dir_t*);
 char* r_readdir(r_dir_t*, bool);

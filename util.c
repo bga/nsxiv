@@ -66,7 +66,7 @@ char *estrdup(const char *s)
 	return memcpy(emalloc(n), s, n);
 }
 
-void error(int eval, int err, const char *fmt, ...)
+void errorCall(char const* fileParh, int lineNo, int eval, int err, const char *fmt, ...)
 {
 	va_list ap;
 
@@ -74,7 +74,11 @@ void error(int eval, int err, const char *fmt, ...)
 		return;
 
 	fflush(stdout);
-	fprintf(stderr, "%s: ", progname);
+	#ifndef NDEBUG
+		fprintf(stderr, "[%s:%i] %s: ", fileParh, lineNo, progname);
+	#else
+		fprintf(stderr, "%s: ", progname);
+	#endif
 	va_start(ap, fmt);
 	if (fmt != NULL)
 		vfprintf(stderr, fmt, ap);
