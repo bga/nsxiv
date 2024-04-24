@@ -17,6 +17,12 @@
  * along with nsxiv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+//# [https://stackoverflow.com/questions/19525378/be64toh-not-linking-or-being-declared-when-compiling-with-std-c99]
+#define _BSD_SOURCE
+#define __USE_BSD
+#define _DEFAULT_SOURCE
+
+
 #include "nsxiv.h"
 #define INCLUDE_IMAGE_CONFIG
 #include "config.h"
@@ -27,6 +33,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <endian.h>
+
+
 #include <unistd.h>
 
 #if HAVE_LIBEXIF
@@ -39,6 +49,17 @@ enum { DEF_ANIM_DELAY = 75 };
 
 #define ZOOM_MIN (zoom_levels[0] / 100)
 #define ZOOM_MAX (zoom_levels[ARRLEN(zoom_levels) - 1] / 100)
+
+#ifndef O_LARGEFILE
+	#warning No large file support
+	#define O_LARGEFILE 0
+#endif
+
+#ifndef O_NOATIME
+	//# just ignore
+	#define O_NOATIME 0
+#endif
+
 
 static int calc_cache_size(void)
 {
@@ -254,17 +275,92 @@ static bool img_load_multiframe(img_t *img, const fileinfo_t *file)
 }
 #endif /* HAVE_IMLIB2_MULTI_FRAME */
 
+static char const* img_guessFileFormat(char const* data, size_t dataSize) {
+	if(8 <= dataSize && ((uint32_t*)data)[0] == htobe32(0x89504e47) && ((uint32_t*)data)[1] == htobe32(0x0d0a1a0a)) return "f.png";
+	if(4 <= dataSize && ((uint32_t*)data)[0] == htobe32(0x49492A00)) return "f.tif";
+	if(4 <= dataSize && ((uint32_t*)data)[0] == htobe32(0x4D4D002A)) return "f.tif";
+	if(4 <= dataSize && ((uint32_t*)data)[0] == htobe32(0x52494646)) return "f.webp";
+	if(4 <= dataSize && ((uint32_t*)data)[0] == htobe32(0x54504943)) return "f.tga";
+	if(6 <= dataSize && ((uint32_t*)data)[0] == htobe32(0x47494638) && ( ((uint16_t*)(data + 4))[0] == htobe16(0x3761) || ((uint16_t*)(data + 4))[0] == htobe16(0x3961) )  ) return "f.gif";
+	if(3 <= dataSize && ((uint8_t*)data)[0] == 0xff && ((uint8_t*)data)[1] == 0xd8 && ((uint8_t*)data)[2] == 0xff) return "f.jpg";
+	if(2 <= dataSize && ((uint16_t*)data)[0] == htobe16(0x424d)) return "f.bmp";
+	return NULL;
+}
+
+int img_fileOpen(char const* path, int flags, mode_t mode) {
+	int f = open(path, flags, mode);
+	#if O_NOATIME != 0
+		if(f < 0) f = open(path, flags & ~O_NOATIME, mode);
+	#endif
+	return f;
+}
+
+
+static char* img_readAll(int fd, size_t* dataSizeOut) {
+	const ssize_t bufferAddSize = 1024 * 1024;
+	ssize_t bufferSize = 1024 * 1024;
+	ssize_t bufferCurrentSize = 0;
+	
+	char* buffer = (char*)malloc(bufferSize);
+	for(;;) {
+		if(bufferCurrentSize ==	bufferSize) {
+			bufferSize += bufferAddSize;
+			buffer = realloc(buffer, bufferSize);
+		};
+		ssize_t s = read(fd, &buffer[bufferCurrentSize], bufferSize - bufferCurrentSize);
+		if(s < 0) goto fail;
+		if(s == 0) break;
+		bufferCurrentSize += s;
+	}
+	goto ok;
+
+	fail:
+	free(buffer);
+	buffer = NULL;
+	bufferCurrentSize = 0;
+
+	ok:
+	*dataSizeOut = bufferCurrentSize;
+	return buffer;
+}
+
+static char* img_readFile(char const* filePath, size_t* dataSizeOut) {
+	int fd = (strcmp(filePath, "-") == 0) ? STDIN_FILENO : img_fileOpen(filePath, O_RDONLY | O_LARGEFILE | O_NOATIME, 0);
+	if(fd < 0) return NULL;
+	char* ret = img_readAll(fd, dataSizeOut);
+	if(fd != STDIN_FILENO ) close(fd);
+	return ret;
+}
+
+static Imlib_Image* img_readImage(char const* filePath) {
+	Imlib_Image* ret = NULL;
+
+	size_t dataSize = 0;
+	char* data = img_readFile(filePath, &dataSize);
+	if(data == NULL) return NULL;
+
+	char const* fileFmt = img_guessFileFormat(data, dataSize);
+	if(fileFmt == NULL) goto fail_unknownFmt;
+
+	ret = imlib_load_image_mem(fileFmt, data, dataSize);
+
+	fail_unknownFmt:
+	if(data != NULL) { free(data); data = NULL; };
+	return ret;
+}
+static Imlib_Image* img_readImageFrame(char const* filePath, int frame) { (void)frame;
+	return img_readImage(filePath);
+}
+
 Imlib_Image img_open(const fileinfo_t *file)
 {
-	struct stat st;
 	Imlib_Image im = NULL;
 
 	if (access(file->path, R_OK) == 0 &&
-	    stat(file->path, &st) == 0 && S_ISREG(st.st_mode) &&
 #if HAVE_IMLIB2_MULTI_FRAME
-	    (im = imlib_load_image_frame(file->path, 1)) != NULL)
+	    (im = img_readImageFrame(file->path, 1)) != NULL)
 #else
-	    (im = imlib_load_image_immediately(file->path)) != NULL)
+	    (im = img_readImage(file->path)) != NULL)
 #endif
 	{
 		imlib_context_set_image(im);
